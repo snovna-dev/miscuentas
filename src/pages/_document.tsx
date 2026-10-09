@@ -2,8 +2,10 @@ import { Html, Head, Main, NextScript } from "next/document";
 
 export default function Document() {
   return (
-    <Html lang="es">
-      <Head />
+    <Html lang="es-CO">
+      <Head>
+        <meta charSet="utf-8" />
+      </Head>
       <body className="antialiased">
         <noscript>
             <iframe

@@ -17,7 +17,7 @@ export default function Navbar() {
       <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-1 lg:px-8">
         
         <Image
-            src="/Logo.svg"
+            src="/Logo.png"
             alt="Logo"
             width={90}
             height={90}

@@ -23,8 +23,7 @@ export default function Contact() {
           <Office
             title="Contacto"
             address="Colombia"
-            phone="222-222-2222"
-            email="mikesyn.dev@gmail.com"
+            email="mikecode.contact@gmail.com"
           />
         </div>
       </div>
@@ -35,14 +34,12 @@ export default function Contact() {
 type OfficeProps = {
   title: string;
   address: string;
-  phone: string;
   email: string;
 };
 
 function Office({
   title,
   address,
-  phone,
   email,
 }: OfficeProps) {
   return (
@@ -56,17 +53,6 @@ function Office({
       </p>
 
       <hr className="my-6" />
-
-      <p>
-        <span className="font-medium">Phone: </span>
-
-        <a
-          href={`tel:${phone}`}
-          className="text-cyan-600 hover:underline"
-        >
-          {phone}
-        </a>
-      </p>
 
       <p className="mt-3">
         <span className="font-medium">Email: </span>
