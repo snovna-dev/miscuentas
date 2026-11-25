@@ -1,115 +1,44 @@
-import type { NextApiRequest, NextApiResponse } from "next";
-import { parse } from "cookie";
-import { getUserBySessionToken, SESSION_COOKIE_NAME } from "@/lib/auth";
-import { createCategory, deleteCategory, getAllCategories, getCategoriesByType, updateCategory } from "@/lib/db/queries/categories";
+import { createCategory, deleteCategory, getAllCategories, getCategoriesByType, updateCategory, type CategoryInput } from "@/lib/db/queries/categories";
+import { apiRoute, requireAdmin } from "@/lib/http";
+import { asObject, oneOf, optString, reqId, reqString } from "@/lib/validation";
+import { ExpenseCategoryType } from "@/emuns/ExpenseCategoryType";
 
-type CategoryForm = {
-    name_category: string;
-    category_type: number;
-    description: string;
-};
+export const config = { api: { bodyParser: { sizeLimit: "32kb" } } };
 
-export default async function handler(
-    req: NextApiRequest,
-    res: NextApiResponse
-) {
-    const cookies = parse(req.headers.cookie || "");
-    const token = cookies[SESSION_COOKIE_NAME];
+const TYPES = [ExpenseCategoryType.FIXED, ExpenseCategoryType.VARIABLE, ExpenseCategoryType.SAVINGS] as const;
 
-    if (!token) return res.status(401).json({ error: "No auth" });
-
-    const user = await getUserBySessionToken(token);
-    if (!user) return res.status(401).json({ error: "No auth" });
-
-    try {
-        switch (req.method) {
-        case "POST": {
-
-            const { category} = req.body as {
-                category: CategoryForm
-            };
-
-            if (!category) {
-                return res
-                .status(400)
-                .json({ error: "Datos invalidos"});
-            }
-
-            const newData = {
-                name: category.name_category ?? "",
-                category_type: category.category_type,
-                description: category.description,
-            }
-
-            const expenseResult = await createCategory(newData);
-
-            return res.status(200).json({
-                success: true,
-                id: expenseResult.id
-            });
-        }
-        case "GET": {
-            const { type } = req.query;
-
-            if (type){
-                const categories = await getCategoriesByType(Number(type));
-                return res.status(200).json({ categories });
-            }else {
-                const categories = await getAllCategories();
-                return res.status(200).json({ categories });
-            }
-
-        }
-        case "DELETE": {
-            const { id } = req.body as {
-                id: number,
-            };
-
-            if (!id ) {
-                return res
-                .status(400)
-                .json({ error: "Faltan campos obligatorios" + id });
-            }
-
-            const categoryDeleted = await deleteCategory(id);
-
-            return res.status(200).json({
-                success: true,
-                id: categoryDeleted.id
-            });
-        }
-        case "PUT": {
-            const { id, category } = req.body as {
-                id: number,
-                category: CategoryForm
-            };
-
-            if (!id || !category ) {
-                return res
-                .status(400)
-                .json({ error: "Faltan campos obligatorios"});
-            }
-
-            const categoryUpdated = await updateCategory(id, category);
-
-            return res.status(200).json({
-                success: true,
-                id: categoryUpdated.id
-            });
-        }
-        default:
-            return res.status(405).json({ error: "Método no permitido" });
-        }
-    } catch (err: unknown) {
-
-        if (err instanceof Error) {
-            return res.status(500).json({
-                error: err.message
-            });
-        }
-
-        return res.status(500).json({
-            error: "Ocurrió un error desconocido"
-        });
-    }
+function parseCategory(value: unknown): CategoryInput {
+    const category = asObject(value, "la categoría");
+    return {
+        name: reqString(category.name_category ?? category.name, "nombre", { max: 80 }),
+        category_type: oneOf(category.category_type, TYPES, "tipo de categoría"),
+        description: optString(category.description, "descripción", { max: 255 }),
+    };
 }
+
+// Las categorías son globales: cualquiera las consulta, solo el administrador las modifica.
+export default apiRoute({
+    GET: async (req) => {
+        const { type } = req.query;
+        const categories = type ? await getCategoriesByType(oneOf(type, TYPES, "tipo")) : await getAllCategories();
+        return { categories };
+    },
+    POST: async (req, _res, user) => {
+        requireAdmin(user);
+        const { id } = await createCategory(parseCategory(asObject(req.body).category));
+        return { success: true, id };
+    },
+    PUT: async (req, _res, user) => {
+        requireAdmin(user);
+        const body = asObject(req.body);
+        const id = reqId(body.id);
+        await updateCategory(id, parseCategory(body.category));
+        return { success: true, id };
+    },
+    DELETE: async (req, _res, user) => {
+        requireAdmin(user);
+        const id = reqId(asObject(req.body).id);
+        await deleteCategory(id);
+        return { success: true, id };
+    },
+});

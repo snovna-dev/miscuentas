@@ -1,116 +1,102 @@
-import { FormExpenses } from "@/components/form_expenses";
-import { Header } from "@/components/header";
-import { TableAllExpenses } from "@/components/table_expenses";
-import { useState } from "react";
+import * as React from "react";
+import { AdminLayout } from "@/components/admin/AdminLayout";
+import { AdminTable, useCollection } from "@/components/admin/AdminTable";
+import { ConfirmDialog, Dialog } from "@/components/ui/dialog";
+import { Badge } from "@/components/ui/primitives";
+import { useToast } from "@/components/ui/toast";
+import { ExpenseForm } from "@/components/forms/ExpenseForm";
+import { CategoryIcon } from "@/components/finance/CategoryIcon";
+import { api, errorMessage } from "@/lib/client/api";
+import { formatDateShort } from "@/lib/dates";
+import { formatMoney } from "@/lib/format";
+import { withPageAuth } from "@/lib/ssr";
+import { ExpenseCategoryType } from "@/emuns/ExpenseCategoryType";
+import type { Expense, ExpenseInput } from "@/types";
 
-type ExpensesForm = {
-    expense_category_id: number;
-    name: string;
-    description: string;
-    expense_date: string;
-    amount: number;
-};
+export const getServerSideProps = withPageAuth("admin");
 
-type ExpenseRow = {
-    id: number,
-    user_id: number,
-    expense_category_id: number,
-    name: string,
-    description: string,
-    expense_date: string,
-    amount: number,
-    created_at: string,
-    updated_at: string,
-    deleted_at: string,
-};
+export default function AdminExpenses() {
+    const toast = useToast();
+    const [editing, setEditing] = React.useState<Expense | null>(null);
+    const [deleting, setDeleting] = React.useState<Expense | null>(null);
+    const { rows, loading, reload } = useCollection(
+        async () => (await api<{ expenses: Expense[] }>("/api/expenses")).expenses,
+        (message) => toast.error("Error al cargar gastos", message)
+    );
 
-export default function Expenses(){
-    const [error, setError] = useState<string | null>(null);
-    const [success, setSuccess] = useState<string | null>(null);
-    const [reloadTable, setReloadTable] = useState(false);
-    const [expenseToEdit, setExpenseToEdit] = useState<ExpenseRow | null>(null);
-
-    //Funcion para crear los gastos
-    async function handleCreateExpense(expenses: ExpensesForm) {
-        const res = await fetch("/api/me");
-        const dataUser = await res.json();
-
-        const body = {
-            id: dataUser.user.id,
-            expenses: expenses
-        };
-
-        try {
-            const res = await fetch("/api/expenses", {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                },
-                body: JSON.stringify(body),
-            });
-            const data = await res.json();
-
-            setReloadTable(prev => !prev);
-
-            if (!res.ok) {
-                setError(data.error);
-                return;
-            }
-
-            setSuccess(data.id);
-            setTimeout(() => setSuccess(null), 5000);
-        } catch (err) {
-            setError("Error al iniciar sesión. Por favor, inténtalo de nuevo.");
-            setTimeout(() => setError(null), 5000);
-        }
+    async function update(values: ExpenseInput) {
+        if (!editing) return;
+        await api("/api/expenses", { method: "PUT", body: { id: editing.id, expense: values } });
+        toast.success("Gasto actualizado");
+        setEditing(null);
+        await reload();
     }
 
-    //Funcion para actualizar el gasto
-    async function handleUpdateExpense(expense: ExpensesForm) {
-        const body = {
-            id: expenseToEdit?.id,
-            expense: expense
-        };
-
+    async function remove() {
+        if (!deleting) return;
         try {
-            const res = await fetch("/api/expenses", {
-                method: "PUT",
-                headers: {
-                    "Content-Type": "application/json",
-                },
-                body: JSON.stringify(body),
-            });
-            const data = await res.json();
-
-            setReloadTable(prev => !prev);
-
-            if (!res.ok) {
-                setError(data.error);
-                return;
-            }
-
-            setSuccess(data.id);
-            setTimeout(() => setSuccess(null), 5000);
-        } catch (err) {
-            setError("Error al iniciar sesión. Por favor, inténtalo de nuevo.");
-            setTimeout(() => setError(null), 5000);
+            await api("/api/expenses", { method: "DELETE", body: { id: deleting.id } });
+            toast.success("Gasto eliminado", "Se conservó el historial de pagos.");
+            setDeleting(null);
+            await reload();
+        } catch (error) {
+            toast.error("No se pudo eliminar", errorMessage(error));
         }
     }
 
     return (
-        <div>
-            <Header/>
-            Administracion de Gastos
-            <br />
-            <FormExpenses createExpense={handleCreateExpense} expenseToEdit={expenseToEdit} UpdateExpense={handleUpdateExpense}/>
-            {error && (
-                <p className="text-red-600 text-center">{error}</p>
-            )}
-            {success && (
-                <p className="text-green-600 text-center">Gasto con ID {success} registrado</p>
-            )}
-            <br />
-            <TableAllExpenses onEdit={setExpenseToEdit} reload={reloadTable}/>
-        </div>
-    )
+        <AdminLayout title="Gastos" description="Definiciones de gastos de todos los usuarios. Los fijos se repiten cada mes.">
+            <AdminTable
+                title="Gastos"
+                rows={rows}
+                loading={loading}
+                rowKey={(r) => r.id}
+                onEdit={(row) =>
+                    Number(row.category_type) === ExpenseCategoryType.FIXED
+                        ? setEditing(row)
+                        : toast.info("Los gastos variables se editan desde «Gastos por mes»", "Así se mantiene sincronizado el registro del mes.")
+                }
+                onDelete={setDeleting}
+                columns={[
+                    {
+                        header: "Gasto",
+                        cell: (r) => (
+                            <span className="flex items-center gap-2.5">
+                                <CategoryIcon name={r.category_name} size="sm" />
+                                <span>
+                                    <span className="block font-medium">{r.name}</span>
+                                    <span className="block text-xs text-muted-foreground">{r.category_name}</span>
+                                </span>
+                            </span>
+                        ),
+                        search: (r) => `${r.name} ${r.category_name}`,
+                    },
+                    { header: "Usuario", cell: (r) => r.user_name, search: (r) => r.user_name ?? "" },
+                    { header: "Tipo", cell: (r) => (Number(r.category_type) === ExpenseCategoryType.FIXED ? <Badge tone="brand">Fijo</Badge> : <Badge tone="info">Variable</Badge>) },
+                    { header: "Fecha", cell: (r) => formatDateShort(r.expense_date) },
+                    { header: "Valor", cell: (r) => <span className="font-medium tabular">{formatMoney(r.amount)}</span>, className: "text-right" },
+                ]}
+            />
+            <Dialog open={Boolean(editing)} onOpenChange={(open) => !open && setEditing(null)} title="Editar gasto" description={editing?.user_name}>
+                {editing && (
+                    <ExpenseForm
+                        key={editing.id}
+                        kind="fixed"
+                        initial={{ ...editing, amount: Number(editing.amount), description: editing.description ?? "" }}
+                        onSubmit={update}
+                        onCancel={() => setEditing(null)}
+                        idPrefix="admin-expense"
+                    />
+                )}
+            </Dialog>
+            <ConfirmDialog
+                open={Boolean(deleting)}
+                onOpenChange={(open) => !open && setDeleting(null)}
+                title="¿Eliminar gasto?"
+                description={deleting ? `"${deleting.name}" de ${deleting.user_name}. Se quitarán sus pendientes desde este mes; el historial se conserva.` : undefined}
+                confirmLabel="Eliminar"
+                onConfirm={remove}
+            />
+        </AdminLayout>
+    );
 }

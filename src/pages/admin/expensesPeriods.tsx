@@ -1,145 +1,145 @@
-// import { FormPeriodExpense } from "@/components/form_periodExpenses";
-import { FormPeriodExpense } from "@/components/form_periodExpenses";
-import { Header } from "@/components/header";
-import { TableAllPeriodExpenses } from "@/components/table_periodExpenses";
-import { useState } from "react";
+import * as React from "react";
+import { AdminLayout } from "@/components/admin/AdminLayout";
+import { AdminTable } from "@/components/admin/AdminTable";
+import { ConfirmDialog, Dialog } from "@/components/ui/dialog";
+import { Field } from "@/components/ui/field";
+import { SelectField } from "@/components/ui/category-select";
+import { Badge, EmptyState } from "@/components/ui/primitives";
+import { useToast } from "@/components/ui/toast";
+import { PeriodExpenseForm } from "@/components/forms/PeriodExpenseForm";
+import { CategoryIcon } from "@/components/finance/CategoryIcon";
+import { MonthSwitcher } from "@/components/finance/MonthSwitcher";
+import { api, errorMessage } from "@/lib/client/api";
+import { formatDateShort, type YearMonth } from "@/lib/dates";
+import { useCurrentMonth } from "@/contexts/TodayContext";
+import { formatMoney } from "@/lib/format";
+import { withPageAuth } from "@/lib/ssr";
+import { ExpenseState } from "@/emuns/ExpenseState";
+import type { AdminUser, Period, PeriodExpense, PeriodExpensePatch } from "@/types";
+import { Users } from "lucide-react";
 
-export type ExpensePeriodRow = {
-    id: number,
-    month_id: number,
-    month_name: string,
-    name: string,
-    description: string,
-    category_id: number,
-    category_name: string,
-    category_type: number,
-    expense_date: string,
-    amount: number,
-    state: string,
-}
+export const getServerSideProps = withPageAuth("admin");
 
-type ExpensesRow = {
-    id: number,
-    user_id: number,
-    expense_category_id: number,
-    name: string,
-    description: string,
-    expense_date: string,
-    amount: number,
-    created_at: string,
-    updated_at: string,
-    deleted_at: string,
-    user_name?: string,
-};
+export default function AdminPeriodExpenses() {
+    const toast = useToast();
+    const today = useCurrentMonth();
+    const [ym, setYm] = React.useState<YearMonth>(today);
+    const [users, setUsers] = React.useState<AdminUser[]>([]);
+    const [userId, setUserId] = React.useState("");
+    const [rows, setRows] = React.useState<PeriodExpense[]>([]);
+    const [loading, setLoading] = React.useState(false);
+    const [editing, setEditing] = React.useState<PeriodExpense | null>(null);
+    const [deleting, setDeleting] = React.useState<PeriodExpense | null>(null);
 
-type ExpensesForm = {
-    expense_category_id: number;
-    name: string;
-    description: string;
-    expense_date: string;
-    amount: number;
-    period_id?: number;
-};
+    React.useEffect(() => {
+        api<{ users: AdminUser[] }>("/api/users")
+            .then((data) => setUsers(data.users))
+            .catch((error) => toast.error("Error al cargar usuarios", errorMessage(error)));
+    }, [toast]);
 
-export default function ExpensesPeriods() {
-    const [error, setError] = useState<string | null>(null);
-    const [success, setSuccess] = useState<string | null>(null);
-    const [reloadTable, setReloadTable] = useState(false);
-    const [expensePeriodToEdit, setExpensePeriodToEdit] = useState<ExpensePeriodRow | null>(null);
-    
-    async function handleCreatePeriodExpense(expense: ExpensesForm) {
-        const res = await fetch("/api/me");
-        const dataUser = await res.json();        
-        let date = new Date();
-        let year = date.getFullYear();
-        let month = date.getMonth() + 1;
-
+    const load = React.useCallback(async () => {
+        if (!userId) return;
+        setLoading(true);
         try {
-            //consulta y valida si hay un periodo del mes actual, arreglar para que valide con el mes actual
-            let res = await fetch(`/api/periods?month=${month}&year=${year}`, {
-                method: "GET",
-            });
-            const dataPeriodsMonth = await res.json();
-
-            if (!res.ok) {
-                setError(dataPeriodsMonth.error);
+            const { periodBymonth } = await api<{ periodBymonth: Period | null }>(`/api/periods?month=${ym.month}&year=${ym.year}`);
+            if (!periodBymonth) {
+                setRows([]);
                 return;
             }
+            const data = await api<{ periodExpenses: PeriodExpense[] }>(`/api/periodExpenses?periodId=${periodBymonth.id}&userId=${userId}`);
+            setRows(data.periodExpenses);
+        } catch (error) {
+            toast.error("Error al cargar gastos", errorMessage(error));
+        } finally {
+            setLoading(false);
+        }
+    }, [userId, ym, toast]);
 
-            const dataToSend = {
-                id: dataUser.user.id,
-                expense: expense,
-                idPeriod: dataPeriodsMonth.periodBymonth.id,
-            }
-    
-            res = await fetch("/api/periodExpenses", {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                },
-                body: JSON.stringify(dataToSend),
-            });
-            const data = await res.json();
+    React.useEffect(() => {
+        load();
+    }, [load]);
 
-            if (!res.ok) {
-                setError(data.error);
-                return;
-            }
+    async function update(patch: PeriodExpensePatch) {
+        if (!editing) return;
+        await api("/api/periodExpenses", { method: "PUT", body: { id: editing.id, periodExpense: patch } });
+        toast.success("Gasto actualizado");
+        setEditing(null);
+        await load();
+    }
 
-            setSuccess(data.id);
-            setTimeout(() => setSuccess(null), 5000);
-
-        } catch (err) {
-            setError("Error al iniciar sesión. Por favor, inténtalo de nuevo.");
-            setTimeout(() => setError(null), 5000);
+    async function remove() {
+        if (!deleting) return;
+        try {
+            await api("/api/periodExpenses", { method: "DELETE", body: { id: deleting.id } });
+            toast.success("Gasto eliminado");
+            setDeleting(null);
+            await load();
+        } catch (error) {
+            toast.error("No se pudo eliminar", errorMessage(error));
         }
     }
 
-    async function handleUpdatePeriodExpense(periodExpense: ExpensesForm){
-        const body = {
-            id: expensePeriodToEdit?.id,
-            periodExpense: periodExpense,
-        };
+    return (
+        <AdminLayout title="Gastos por mes" description="Consulta y corrige los gastos mensuales de un usuario.">
+            <div className="flex flex-col gap-4 rounded-2xl border bg-card p-5 shadow-soft sm:flex-row sm:items-end">
+                <Field label="Usuario" htmlFor="admin-user" className="flex-1">
+                    <SelectField
+                        id="admin-user"
+                        value={userId}
+                        onValueChange={setUserId}
+                        placeholder="Selecciona un usuario"
+                        options={users.map((u) => ({ value: String(u.id), label: u.name, description: u.email }))}
+                    />
+                </Field>
+                <MonthSwitcher value={ym} current={today} onChange={setYm} />
+            </div>
 
-        try {
-            const res = await fetch("/api/periodExpenses", {
-                method: "PUT",
-                headers: {
-                    "Content-Type": "application/json",
-                },
-                body: JSON.stringify(body),
-            });
-            const data = await res.json();
-
-            setReloadTable(prev => !prev);
-
-            if (!res.ok) {
-                setError(data.error);
-                return;
-            }
-
-            setSuccess(data.id);
-            setTimeout(() => setSuccess(null), 5000);
-        } catch (err) {
-            setError("Error al actualizar el gasto. Por favor, inténtalo de nuevo.");
-            setTimeout(() => setError(null), 5000);
-        }
-    }
-
-    return(
-        <div>
-            <Header/>
-            Administracion de gastos por periodo
-            <br />
-            <FormPeriodExpense createPeriodExpense={handleCreatePeriodExpense} periodExpenseToEdit={expensePeriodToEdit} UpdatePeriodExpense={handleUpdatePeriodExpense}/>
-            {error && (
-                <p className="text-red-600 text-center">{error}</p>
+            {!userId ? (
+                <EmptyState icon={<Users />} title="Elige un usuario" description="Selecciona un usuario y un mes para ver sus gastos registrados." />
+            ) : (
+                <AdminTable
+                    title="Gastos del mes"
+                    rows={rows}
+                    loading={loading}
+                    rowKey={(r) => r.id}
+                    onEdit={setEditing}
+                    onDelete={setDeleting}
+                    empty="Este usuario no tiene gastos en el mes seleccionado."
+                    columns={[
+                        {
+                            header: "Gasto",
+                            cell: (r) => (
+                                <span className="flex items-center gap-2.5">
+                                    <CategoryIcon name={r.category_name} size="sm" />
+                                    <span>
+                                        <span className="block font-medium">{r.name}</span>
+                                        <span className="block text-xs text-muted-foreground">{r.category_name}</span>
+                                    </span>
+                                </span>
+                            ),
+                            search: (r) => `${r.name} ${r.category_name}`,
+                        },
+                        { header: "Fecha", cell: (r) => formatDateShort(r.expense_date) },
+                        { header: "Valor", cell: (r) => <span className="font-medium tabular">{formatMoney(r.amount)}</span>, className: "text-right" },
+                        {
+                            header: "Estado",
+                            cell: (r) => (Number(r.state_id) === ExpenseState.PAID ? <Badge tone="success">Pagado</Badge> : <Badge tone="warning">Pendiente</Badge>),
+                        },
+                    ]}
+                />
             )}
-            {success && (
-                <p className="text-green-600 text-center">Ingreso con ID {success} registrado</p>
-            )}
-            <br />
-            <TableAllPeriodExpenses onEdit={setExpensePeriodToEdit} reload={reloadTable}/>
-        </div>
-    )
+
+            <Dialog open={Boolean(editing)} onOpenChange={(open) => !open && setEditing(null)} title="Editar gasto del mes">
+                {editing && <PeriodExpenseForm key={editing.id} expense={editing} onSubmit={update} onCancel={() => setEditing(null)} showAccount={false} />}
+            </Dialog>
+            <ConfirmDialog
+                open={Boolean(deleting)}
+                onOpenChange={(open) => !open && setDeleting(null)}
+                title="¿Eliminar gasto?"
+                description={deleting ? `"${deleting.name}" (${formatMoney(deleting.amount)}).` : undefined}
+                confirmLabel="Eliminar"
+                onConfirm={remove}
+            />
+        </AdminLayout>
+    );
 }

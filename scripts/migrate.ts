@@ -16,7 +16,8 @@ const pool = mysql.createPool({
     database: process.env.DB_NAME,
     
     waitForConnections: true,
-    connectionLimit: 10,
+    // Las migraciones usan una sola conexión (importante con límites como el de Clever Cloud).
+    connectionLimit: 1,
     queueLimit: 0,
 
     // Permite ejecutar varios comandos SQL dentro del archivo

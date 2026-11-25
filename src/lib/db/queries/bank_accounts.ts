@@ -1,157 +1,62 @@
-import { allAsync, getDb, runAsync } from "../index";
+import crypto from "crypto";
+import { allAsync, getDb, nowISO, runAsync } from "../index";
+import { HttpError } from "@/lib/http";
+import type { BankAccount, BankAccountInput } from "@/types";
 
-export type NewBankAccount = {
-    userId: number,
-    account_number: string,
-    account_type: number,
-    bank: string
-};
+const COLUMNS = `b.id, b.user_id, b.account_number, b.account_type, b.bank_name, b.account_balance, b.created_at, b.updated_at`;
 
-type DbBankAccountRow = {
-    account_number: string,
-    account_type: number,
-    bank_name: string,
-    account_balance: number,
-    created_at: string,
-    updated_at: string,
-    deleted_at: string,
-};
-
-type DbUpdateBankAccountRow = {
-    account_number: string,
-    account_type: number,
-    bank_name: string,
-};
-
-export async function createBankAccount(bankAccount: NewBankAccount): Promise<{ id: number }> {
-    const db = getDb();
-    const isNow = () => new Date().toISOString();
-    let began = false;
-
-    try {
-        await runAsync(db, "BEGIN");
-        began = true;
-        const bankAcount = await runAsync(
-            db,
-            `INSERT INTO bank_accounts (user_id, account_number, account_type, bank_name, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)`,
-            [bankAccount.userId, bankAccount.account_number, bankAccount.account_type, bankAccount.bank, isNow(), isNow()]
-        );
-
-        await runAsync(db, "COMMIT");
-
-        return { id: bankAcount.lastID };
-    }catch (e) {
-        if (began) await runAsync(db, "ROLLBACK");
-        throw e;
-    } finally {
-        //db.close();
-    }  
+/**
+ * El número de cuenta es opcional: si no se envía se genera una referencia aleatoria
+ * en el servidor (antes se calculaba en el navegador con un hash del nombre del banco).
+ * Nunca se piden números completos de cuenta.
+ */
+function accountReference(input: BankAccountInput) {
+    const last4 = (input.account_number ?? "").replace(/\D/g, "").slice(-4);
+    return `${last4 ? `****${last4}` : "ref"}-${crypto.randomUUID()}`;
 }
 
-export async function getAllBankAccount(): Promise<DbBankAccountRow[]>  {
-    const db = getDb();
-    let began = false;
-
-    try {
-        await runAsync(db, "BEGIN");
-        began = true;
-        const banckAccountResult = await allAsync<DbBankAccountRow>(
-            db,
-            `select
-            ba.*
-            from bank_accounts ba`,
-        );
-
-        if(!banckAccountResult){
-            throw new Error("No hay cuentas de banco registrados")
-        }
-
-        return banckAccountResult;
-    }catch (e) {
-        if (began) await runAsync(db, "ROLLBACK");
-        throw e;
-    } finally {
-        //db.close();
-    }  
+export async function createBankAccount(userId: number, input: BankAccountInput) {
+    const result = await runAsync(
+        getDb(),
+        `INSERT INTO bank_accounts (user_id, account_number, account_type, bank_name, account_balance, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [userId, accountReference(input), input.account_type, input.bank_name, input.opening_balance ?? 0, nowISO(), nowISO()]
+    );
+    return { id: result.lastID };
 }
 
-export async function deleteBankAccount(id: number): Promise<{ id: number }> {
-    const db = getDb();
-    let began = false;
-
-    try {
-        await runAsync(db, "BEGIN");
-        began = true;
-
-        const deleteResult = await runAsync(
-            db,
-            `DELETE FROM bank_accounts WHERE id = ?`,
-            [id],
-        );
-        await runAsync(db, "COMMIT");
-        
-        if(deleteResult.changes === 0){
-            throw new Error("No se encontró la cuenta de banco a eliminar");
-        }
-        return {id};
-    }catch (e) {
-        if (began) await runAsync(db, "ROLLBACK");
-        throw e;
-    } finally {
-        //db.close();
-    }  
+export async function listBankAccountsByUser(userId: number) {
+    return allAsync<BankAccount>(
+        getDb(),
+        `SELECT ${COLUMNS} FROM bank_accounts b WHERE b.user_id = ? AND b.deleted_at IS NULL ORDER BY b.id`,
+        [userId]
+    );
 }
 
-export async function updateBankAccount(id: number, data: DbUpdateBankAccountRow): Promise<{ id: number }> {
-    const db = getDb();
-    const isNow = () => new Date().toISOString();
-    let began = false;
-
-    try {
-        await runAsync(db, "BEGIN");
-        began = true;
-
-        const updateResult = await runAsync(
-            db,
-            `UPDATE bank_accounts SET
-            account_number = ?, account_type = ?, bank_name = ?, updated_at = ?
-            WHERE id = ?`,
-            [data.account_number, data.account_type, data.bank_name, isNow(), id],
-        );
-        await runAsync(db, "COMMIT");
-
-        if(updateResult.changes === 0){
-            throw new Error("No se encontró la cuenta de banco a actualizar");
-        }
-        return {id};
-    }catch (e) {
-        if (began) await runAsync(db, "ROLLBACK");
-        throw e;
-    } finally {
-        //db.close();
-    }  
+export async function listAllBankAccounts() {
+    return allAsync<BankAccount>(
+        getDb(),
+        `SELECT ${COLUMNS}, u.name AS user_name FROM bank_accounts b INNER JOIN users u ON u.id = b.user_id
+         WHERE b.deleted_at IS NULL ORDER BY b.id DESC LIMIT 1000`
+    );
 }
 
-export async function getBankAccountByUser(id: number): Promise<DbBankAccountRow[]> {
-    const db = getDb();
+export async function updateBankAccount(id: number, userId: number | null, input: BankAccountInput) {
+    const result = await runAsync(
+        getDb(),
+        `UPDATE bank_accounts SET account_type = ?, bank_name = ?, account_balance = COALESCE(?, account_balance), updated_at = ?
+         WHERE id = ? ${userId === null ? "" : "AND user_id = ?"}`,
+        [input.account_type, input.bank_name, input.opening_balance ?? null, nowISO(), id, ...(userId === null ? [] : [userId])]
+    );
+    if (result.changes === 0) throw new HttpError(404, "No se encontró la cuenta.");
+    return { id };
+}
 
-    try {
-        const allBankAccountResult = await allAsync<DbBankAccountRow>(
-            db,
-            `SELECT
-                *
-            FROM bank_accounts e
-            WHERE e.user_id = ?`,
-            [id],
-        );
-
-        if(!allBankAccountResult){
-            throw new Error("No hay gastos registrados")
-        }
-
-        return allBankAccountResult;
-    }finally {
-        //db.close();
-    }   
+export async function deleteBankAccount(id: number, userId: number | null) {
+    const result = await runAsync(
+        getDb(),
+        `DELETE FROM bank_accounts WHERE id = ? ${userId === null ? "" : "AND user_id = ?"}`,
+        userId === null ? [id] : [id, userId]
+    );
+    if (result.changes === 0) throw new HttpError(404, "No se encontró la cuenta.");
+    return { id };
 }

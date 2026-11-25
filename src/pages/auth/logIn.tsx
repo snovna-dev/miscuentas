@@ -1,155 +1,163 @@
-import { Button } from "@/components/buttons";
-import { Header } from "@/components/header";
-import { Input } from "@/components/ui/input";
-import { useState } from "react";
+import * as React from "react";
+import Link from "next/link";
 import { useRouter } from "next/router";
+import { ArrowLeft, LogIn as LogInIcon, ShieldCheck } from "lucide-react";
+import { AuthLayout } from "@/components/layout/AuthLayout";
+import { Button } from "@/components/buttons";
+import { Field, FormError } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
+import { useUser } from "@/contexts/UserContext";
+import { api, errorMessage } from "@/lib/client/api";
+import { withPageAuth } from "@/lib/ssr";
+import type { SessionUser } from "@/types";
+
+export const getServerSideProps = withPageAuth("guest");
+
+function safeNext(value: unknown) {
+    return typeof value === "string" && value.startsWith("/") && !value.startsWith("//") ? value : null;
+}
+
+type LoginResponse = { user?: SessionUser; redirectTo?: string; twoFactor?: boolean; challenge?: string };
 
 export default function LogIn() {
-    const [error, setError] = useState<string | null>(null);
-    const [loading, setLoading] = useState(false);
-
     const router = useRouter();
+    const { setUser } = useUser();
+    const [email, setEmail] = React.useState("");
+    const [password, setPassword] = React.useState("");
+    const [challenge, setChallenge] = React.useState<string | null>(null);
+    const [code, setCode] = React.useState("");
+    const [useRecovery, setUseRecovery] = React.useState(false);
+    const [error, setError] = React.useState<string | null>(null);
+    const [loading, setLoading] = React.useState(false);
+    const expired = router.query.expired === "1";
 
-    async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
-        e.preventDefault();
+    async function finish(data: LoginResponse) {
+        setUser(data.user!);
+        const next = safeNext(router.query.next);
+        await router.push(next && !data.user!.needsOnboarding ? next : data.redirectTo!);
+    }
 
+    async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+        event.preventDefault();
         setError(null);
         setLoading(true);
-
-        const form = e.currentTarget;
-
-        const body = {
-            email: form.email.value.trim(),
-            password: form.password.value,
-        };
-
         try {
-            const res = await fetch("/api/login", {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                },
-                body: JSON.stringify(body),
-            });
-
-            const data = await res.json();
-
-            if (!res.ok) {
-                setError(
-                    data.error ??
-                    "El correo o la contraseña son incorrectos."
-                );
+            const data = await api<LoginResponse>("/api/login", { method: "POST", body: { email: email.trim(), password } });
+            if (data.twoFactor && data.challenge) {
+                setChallenge(data.challenge);
+                setPassword("");
+                setLoading(false);
                 return;
             }
-
-            if (data.user.sw_admin === 1) {
-                await router.push("/admin/dashboard");
-                return;
-            }
-
-            if (data.user.needsOnboarding === true) {
-                await router.push("/user/onboarding");
-                return;
-            }
-
-            await router.push("/user/dashboard");
+            await finish(data);
         } catch (err) {
-            console.error("Error al iniciar sesión:", err);
-
-            setError(
-                "No fue posible iniciar sesión. Por favor, inténtalo nuevamente."
-            );
-        } finally {
+            setError(errorMessage(err, "No fue posible iniciar sesión."));
+            setPassword("");
             setLoading(false);
-            setTimeout(() => setError(null), 5000);
         }
     }
 
-    return (
-        <div className="min-h-screen bg-muted/30">
-            <Header />
+    async function handleCode(event: React.FormEvent<HTMLFormElement>) {
+        event.preventDefault();
+        setError(null);
+        setLoading(true);
+        try {
+            await finish(await api<LoginResponse>("/api/login/2fa", { method: "POST", body: { challenge, code } }));
+        } catch (err) {
+            setError(errorMessage(err, "El código no es válido."));
+            setCode("");
+            setLoading(false);
+            if ((err as { status?: number }).status === 401 && /expir/i.test(errorMessage(err))) setChallenge(null);
+        }
+    }
 
-            <main className="flex min-h-[calc(100vh-80px)] items-center justify-center px-4 py-10">
-                <div className="w-full max-w-md">
-                    {/* Encabezado */}
-                    <div className="mb-8 text-center">
-                        <h1 className="text-4xl font-bold tracking-tight">
-                            Iniciar sesión
-                        </h1>
-
-                        <p className="mt-2 text-sm text-muted-foreground">
-                            Ingresa a tu cuenta para continuar
-                        </p>
+    if (challenge) {
+        return (
+            <AuthLayout title="Verificación en dos pasos" heading="Verificación en dos pasos" subheading={useRecovery ? "Escribe uno de tus códigos de recuperación." : "Abre tu app autenticadora y escribe el código de 6 dígitos."}>
+                <form onSubmit={handleCode} className="space-y-4">
+                    <div className="mx-auto flex size-14 items-center justify-center rounded-2xl bg-primary/10 text-primary animate-pop">
+                        <ShieldCheck className="size-7" />
                     </div>
-
-                    {/* Card */}
-                    <div className="rounded-2xl border bg-card p-6 shadow-sm sm:p-8">
-                        <form
-                            onSubmit={handleSubmit}
-                            className="space-y-5"
+                    <Field label={useRecovery ? "Código de recuperación" : "Código de verificación"} htmlFor="code">
+                        <Input
+                            id="code"
+                            autoFocus
+                            autoComplete="one-time-code"
+                            inputMode={useRecovery ? "text" : "numeric"}
+                            maxLength={useRecovery ? 9 : 6}
+                            value={code}
+                            onChange={(e) => setCode(useRecovery ? e.target.value.toUpperCase() : e.target.value.replace(/\D/g, ""))}
+                            placeholder={useRecovery ? "XXXX-XXXX" : "123456"}
+                            className="text-center font-mono text-xl tracking-[0.35em]"
+                        />
+                    </Field>
+                    <FormError message={error} />
+                    <Button type="submit" size="lg" block loading={loading} loadingText="Verificando…" disabled={useRecovery ? code.length < 8 : code.length !== 6}>
+                        Verificar e ingresar
+                    </Button>
+                    <div className="flex items-center justify-between text-sm">
+                        <button type="button" onClick={() => setChallenge(null)} className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground">
+                            <ArrowLeft className="size-4" /> Volver
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => {
+                                setUseRecovery((v) => !v);
+                                setCode("");
+                                setError(null);
+                            }}
+                            className="font-medium text-primary hover:underline"
                         >
-                            {/* Correo */}
-                            <div className="space-y-2">
-                                <label
-                                    htmlFor="email"
-                                    className="text-sm font-medium"
-                                >
-                                    Correo electrónico
-                                </label>
-
-                                <Input
-                                    id="email"
-                                    name="email"
-                                    type="email"
-                                    placeholder="correo@ejemplo.com"
-                                    autoComplete="email"
-                                    required
-                                    disabled={loading}
-                                />
-                            </div>
-
-                            {/* Contraseña */}
-                            <div className="space-y-2">
-                                <label
-                                    htmlFor="password"
-                                    className="text-sm font-medium"
-                                >
-                                    Contraseña
-                                </label>
-
-                                <Input
-                                    id="password"
-                                    name="password"
-                                    type="password"
-                                    placeholder="Ingresa tu contraseña"
-                                    autoComplete="current-password"
-                                    required
-                                    disabled={loading}
-                                />
-                            </div>
-
-                            {/* Error */}
-                            {error && (
-                                <div
-                                    role="alert"
-                                    className="rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive"
-                                >
-                                    {error}
-                                </div>
-                            )}
-
-                            {/* Botón */}
-                            <Button
-                                type="submit"
-                                disabled={loading}
-                                variant="default"
-                            >
-                                {loading ? "Ingresando..." : "Ingresar"}
-                            </Button>
-                        </form>
+                            {useRecovery ? "Usar código de la app" : "Usar código de recuperación"}
+                        </button>
                     </div>
+                </form>
+            </AuthLayout>
+        );
+    }
+
+    return (
+        <AuthLayout
+            title="Iniciar sesión"
+            heading="Bienvenido de nuevo"
+            subheading="Ingresa para revisar cómo van tus finanzas este mes."
+            footer={
+                <>
+                    ¿Aún no tienes cuenta?{" "}
+                    <Link href="/auth/signUp" className="font-medium text-primary hover:underline">
+                        Créala gratis
+                    </Link>
+                </>
+            }
+        >
+            {expired && !error && (
+                <div className="mb-5 rounded-xl border border-info/30 bg-info/8 px-3.5 py-3 text-sm animate-scale-in">Tu sesión expiró. Ingresa de nuevo para continuar.</div>
+            )}
+
+            <form onSubmit={handleSubmit} className="space-y-4">
+                <Field label="Correo electrónico" htmlFor="email">
+                    <Input id="email" type="email" autoComplete="email" autoFocus required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="tu@correo.com" disabled={loading} />
+                </Field>
+
+                <div className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                        <label htmlFor="password" className="text-sm font-medium text-foreground/90">
+                            Contraseña
+                        </label>
+                        <Link href="/auth/forgot" className="text-xs font-medium text-primary hover:underline">
+                            ¿Olvidaste tu contraseña?
+                        </Link>
+                    </div>
+                    <PasswordInput id="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Tu contraseña" disabled={loading} />
                 </div>
-            </main>
-        </div>
+
+                <FormError message={error} />
+
+                <Button type="submit" size="lg" block loading={loading} loadingText="Ingresando…">
+                    <LogInIcon /> Ingresar
+                </Button>
+            </form>
+        </AuthLayout>
     );
 }

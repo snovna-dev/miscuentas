@@ -1,112 +1,24 @@
-import { createConfigInit } from "@/lib/db/queries/onboarding";
-import type { NextApiRequest, NextApiResponse } from "next";
-import { parse } from "cookie";
-import { getUserBySessionToken, SESSION_COOKIE_NAME } from "@/lib/auth";
-import { getAllIncomes, getAllIncomesByUser } from "@/lib/db/queries/incomes";
-import { getAllBankAccount, getBankAccountByUser } from "@/lib/db/queries/bank_accounts";
-import { getAllExpenses, getAllExpensesByUser } from "@/lib/db/queries/expenses";
+import { listBankAccountsByUser } from "@/lib/db/queries/bank_accounts";
+import { listFixedExpensesByUser } from "@/lib/db/queries/expenses";
+import { listIncomesByUser } from "@/lib/db/queries/incomes";
+import { completeOnboarding } from "@/lib/db/queries/users";
+import { apiRoute } from "@/lib/http";
 
-type BankAccountForm = {
-    account_number: number;
-    account_type: string;
-    bank_name: string;
-};
+export const config = { api: { bodyParser: { sizeLimit: "32kb" } } };
 
-type IncomeForm = {
-    amount: number;
-    date: string;
-    description: string;
-}
-
-export default async function handler(
-    req: NextApiRequest,
-    res: NextApiResponse
-) {
-    const cookies = parse(req.headers.cookie || "");
-    const token = cookies[SESSION_COOKIE_NAME];
-
-    if (!token) return res.status(401).json({ error: "No auth" });
-
-    const user = await getUserBySessionToken(token);
-    if (!user) return res.status(401).json({ error: "No auth" });
-
-    try {
-        switch (req.method) {
-        case "POST": {
-            const { id, BankAccount, Income} = req.body as {
-                id: number,
-                BankAccount: BankAccountForm,
-                Income: IncomeForm
-            };
-
-            if (!id || !BankAccount || !Income) {
-                return res
-                .status(400)
-                .json({ error: "Faltan campos obligatorios" + id + BankAccount + Income});
-            }
-
-            const cookies = parse(req.headers.cookie || "");
-            const token = cookies[SESSION_COOKIE_NAME];
-            if (!token) return res.status(401).json({ error: "No auth" });
-
-            const user = await getUserBySessionToken(token);
-            if (!user) return res.status(401).json({ error: "No auth" });
-
-            const newData = {
-                id: id,
-                BankAccount: BankAccount,
-                Income: Income
-            }
-
-            await createConfigInit(newData);
-
-            return res.status(200).json({
-                success: true,
-            });
-        }
-        case "GET": {
-            const incomes =
-                user.sw_admin === 0
-                    ? await getAllIncomesByUser(user.id)
-                    : await getAllIncomes();
-
-            const allBankAccountResult =
-                user.sw_admin === 0
-                    ? await getBankAccountByUser(user.id)
-                    : await getAllBankAccount();
-            
-            const expenses =
-                user.sw_admin === 0
-                    ? await getAllExpensesByUser(user.id)
-                    : await getAllExpenses();
-            
-            const onboarding = {
-                incomes: incomes,
-                bankAccounts: allBankAccountResult,
-                expenses: expenses,
-            }
-
-            return res.status(200).json({ onboarding });
-        }
-        case "DELETE": {
-            return res.status(405).json({ error: "Método no permitido" });
-        }
-        case "PUT": {
-            return res.status(405).json({ error: "Método no permitido" });
-        }
-        default:
-            return res.status(405).json({ error: "Método no permitido" });
-        }
-    } catch (err: unknown) {
-
-        if (err instanceof Error) {
-            return res.status(500).json({
-                error: err.message
-            });
-        }
-
-        return res.status(500).json({
-            error: "Ocurrió un error desconocido"
-        });
-    }
-}
+export default apiRoute({
+    /** Estado del onboarding para poder retomarlo donde quedó. */
+    GET: async (_req, _res, user) => {
+        const [incomes, bankAccounts, expenses] = await Promise.all([
+            listIncomesByUser(user.id),
+            listBankAccountsByUser(user.id),
+            listFixedExpensesByUser(user.id),
+        ]);
+        return { onboarding: { incomes, bankAccounts, expenses } };
+    },
+    /** Marca el onboarding como completado para el usuario de la sesión (no el del cuerpo). */
+    POST: async (_req, _res, user) => {
+        await completeOnboarding(user.id);
+        return { success: true, redirectTo: "/user/dashboard" };
+    },
+});

@@ -1,119 +1,77 @@
-import { FormIncome } from "@/components/form_incomes";
-import { Header } from "@/components/header";
-import { TableAllIncomes } from "@/components/table_incomes";
-import { useState } from "react";
+import * as React from "react";
+import { AdminLayout } from "@/components/admin/AdminLayout";
+import { AdminTable, useCollection } from "@/components/admin/AdminTable";
+import { ConfirmDialog, Dialog } from "@/components/ui/dialog";
+import { useToast } from "@/components/ui/toast";
+import { IncomeForm } from "@/components/forms/IncomeForm";
+import { api, errorMessage } from "@/lib/client/api";
+import { formatDateLong } from "@/lib/dates";
+import { formatMoney } from "@/lib/format";
+import { withPageAuth } from "@/lib/ssr";
+import type { Income, IncomeInput } from "@/types";
 
-type BankAccountForm = {
-    account: number;
-    type: string;
-    bank: string;
-};
+export const getServerSideProps = withPageAuth("admin");
 
-type IncomeForm = {
-    amount: number;
-    income_date: string;
-    description: string;
-}
+export default function AdminIncomes() {
+    const toast = useToast();
+    const [editing, setEditing] = React.useState<Income | null>(null);
+    const [deleting, setDeleting] = React.useState<Income | null>(null);
+    const { rows, loading, reload } = useCollection(
+        async () => (await api<{ incomes: Income[] }>("/api/incomes?scope=all")).incomes,
+        (message) => toast.error("Error al cargar ingresos", message)
+    );
 
-type IncomeRow = {
-    id: number,
-    user_id: number,
-    amount: number,
-    income_date: string,
-    description: string,
-    created_at: string,
-    updated_at: string,
-    deleted_at: string,
-    user_name?: string,
-};
+    async function update(values: IncomeInput) {
+        if (!editing) return;
+        // El admin edita ingresos ajenos: no se envía la cuenta (sus cuentas no son las del usuario).
+        const { amount, income_date, description } = values;
+        await api("/api/incomes", { method: "PUT", body: { id: editing.id, income: { amount, income_date, description } } });
+        toast.success("Ingreso actualizado");
+        setEditing(null);
+        await reload();
+    }
 
-export default function Incomes(){
-    const [error, setError] = useState<string | null>(null);
-    const [success, setSuccess] = useState<string | null>(null);
-    const [incomeToEdit, setIncomeToEdit] = useState<IncomeRow | null>(null);
-    const [reloadTable, setReloadTable] = useState(false);
-
-    //Funcion para crear el ingreso
-    async function handleCreateIncome(income: IncomeForm) {
-        const res = await fetch("/api/me");
-        const dataUser = await res.json();
-
-        const body = {
-            id: dataUser.user.id,
-            income: income
-        };
-
+    async function remove() {
+        if (!deleting) return;
         try {
-            const res = await fetch("/api/incomes", {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                },
-                body: JSON.stringify(body),
-            });
-            const data = await res.json();
-
-            setReloadTable(prev => !prev);
-
-            if (!res.ok) {
-                setError(data.error);
-                return;
-            }
-
-            setSuccess(data.id);
-            setTimeout(() => setSuccess(null), 5000);
-        } catch (err) {
-            setError("Error al crear el ingreso. Por favor, inténtalo de nuevo.");
-            setTimeout(() => setError(null), 5000);
+            await api("/api/incomes", { method: "DELETE", body: { id: deleting.id } });
+            toast.success("Ingreso eliminado");
+            setDeleting(null);
+            await reload();
+        } catch (error) {
+            toast.error("No se pudo eliminar", errorMessage(error));
         }
     }
 
-    //Funcion para actualizar un ingreso
-    async function handleUpdateIncome(income: IncomeForm) {
-        const body = {
-            id: incomeToEdit?.id,
-            income: income
-        };
+    const total = rows.reduce((acc, r) => acc + Number(r.amount), 0);
 
-        try {
-            const res = await fetch("/api/incomes", {
-                method: "PUT",
-                headers: {
-                    "Content-Type": "application/json",
-                },
-                body: JSON.stringify(body),
-            });
-            const data = await res.json();
-
-            setReloadTable(prev => !prev);
-
-            if (!res.ok) {
-                setError(data.error);
-                return;
-            }
-
-            setSuccess(data.id);
-            setTimeout(() => setSuccess(null), 5000);
-        } catch (err) {
-            setError("Error actualizar el ingreso. Por favor, inténtalo de nuevo.");
-            setTimeout(() => setError(null), 5000);
-        }
-    }
-
-    return(
-        <div>
-            <Header/>
-            Administracion de ingreso
-            <br />
-            <FormIncome createIncome={handleCreateIncome} incomeToEdit={incomeToEdit} UpdateIncome={handleUpdateIncome}/>
-            {error && (
-                <p className="text-red-600 text-center">{error}</p>
-            )}
-            {success && (
-                <p className="text-green-600 text-center">Ingreso con ID {success} registrado</p>
-            )}
-            <br />
-            <TableAllIncomes onEdit={setIncomeToEdit} reload={reloadTable}/>
-        </div>
-    )
+    return (
+        <AdminLayout title="Ingresos" description={`Ingresos de todos los usuarios · Total ${formatMoney(total)}`}>
+            <AdminTable
+                title="Ingresos"
+                rows={rows}
+                loading={loading}
+                rowKey={(r) => r.id}
+                onEdit={setEditing}
+                onDelete={setDeleting}
+                columns={[
+                    { header: "Usuario", cell: (r) => <span className="font-medium">{r.user_name}</span>, search: (r) => r.user_name ?? "" },
+                    { header: "Fecha", cell: (r) => formatDateLong(r.income_date) },
+                    { header: "Valor", cell: (r) => <span className="font-medium tabular">{formatMoney(r.amount)}</span>, className: "text-right" },
+                    { header: "Descripción", cell: (r) => <span className="text-muted-foreground">{r.description || "—"}</span>, search: (r) => r.description ?? "" },
+                ]}
+            />
+            <Dialog open={Boolean(editing)} onOpenChange={(open) => !open && setEditing(null)} title="Editar ingreso" description={editing?.user_name}>
+                {editing && <IncomeForm key={editing.id} initial={{ ...editing, amount: Number(editing.amount), description: editing.description ?? "" }} onSubmit={update} onCancel={() => setEditing(null)} idPrefix="admin-income" showAccount={false} />}
+            </Dialog>
+            <ConfirmDialog
+                open={Boolean(deleting)}
+                onOpenChange={(open) => !open && setDeleting(null)}
+                title="¿Eliminar ingreso?"
+                description={deleting ? `${formatMoney(deleting.amount)} de ${deleting.user_name}.` : undefined}
+                confirmLabel="Eliminar"
+                onConfirm={remove}
+            />
+        </AdminLayout>
+    );
 }

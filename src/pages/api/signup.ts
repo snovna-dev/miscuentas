@@ -1,51 +1,32 @@
-import type { NextApiRequest, NextApiResponse } from "next";
-import { createUser } from "@/lib/db/queries/users";
 import bcrypt from "bcryptjs";
+import { BCRYPT_ROUNDS, createUser, sendVerificationEmail } from "@/lib/db/queries/users";
+import { createSession, setSessionCookie } from "@/lib/auth";
+import { clientIp, HttpError, publicRoute } from "@/lib/http";
+import { rateLimit } from "@/lib/rateLimit";
+import { asObject, reqEmail, reqNewPassword, reqString } from "@/lib/validation";
 
-export default async function handler(
-    req: NextApiRequest,
-    res: NextApiResponse
-) {
-    if (req.method !== "POST") {
-        return res.status(405).json({ error: "Método no permitido" });
-    }
+export const config = { api: { bodyParser: { sizeLimit: "32kb" } } };
 
-    try {
-        const { name, email, password, passwordConfirm } = req.body as {
-        name?: string;
-        email?: string;
-        password?: string;
-        passwordConfirm?: string;
-        };
+export default publicRoute({
+    POST: async (req, res) => {
+        rateLimit(`signup:ip:${clientIp(req)}`, 10, 60 * 60 * 1000);
 
-        if (!name || !email || !password) {
-            return res
-                .status(400)
-                .json({ error: "Faltan campos obligatorios (nombre, correo, password)" });
-        }
+        const body = asObject(req.body);
+        const name = reqString(body.name, "nombre", { min: 2, max: 80 });
+        const email = reqEmail(body.email);
+        const password = reqNewPassword(body.password);
+        if (password !== body.passwordConfirm) throw new HttpError(400, "Las contraseñas no coinciden.");
 
-        if (password !== passwordConfirm) {
-            return res
-                .status(400)
-                .json({ error: "Las contraseñas no coinciden" });
-        }
+        const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+        const { id } = await createUser({ name, email, passwordHash });
 
-        const passwordHash = await bcrypt.hash(password, 10);
+        // Inicia sesión automáticamente y lleva al onboarding (antes había que volver a ingresar).
+        const { token, expiresAt } = await createSession(id);
+        setSessionCookie(res, token, expiresAt);
 
-        await createUser({ name, email, passwordHash });
+        // Correo de verificación (si falla el envío, la cuenta igual queda creada).
+        await sendVerificationEmail(id).catch((error) => console.error("[signup] No se envió la verificación", error));
 
-        return res.status(200).json({
-            success: true,
-        });
-    } catch (err: any) {
-        if (err.code === "SQLLITE_ERROR") {
-            return res.status(500).json({ error: err.message });
-        }
-
-        if (!err.code) {
-            return res.status(401).json({ error: err.message });
-        }
-
-        return res.status(500).json({ error: err.message });
-    }
-}
+        return { success: true, redirectTo: "/user/onboarding" };
+    },
+});

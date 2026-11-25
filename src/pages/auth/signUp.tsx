@@ -1,213 +1,109 @@
-import { Button } from "@/components/buttons";
-import { Header } from "@/components/header";
-import { Input } from "@/components/ui/input";
-import { useState } from "react";
+import * as React from "react";
+import Link from "next/link";
 import { useRouter } from "next/router";
+import { UserPlus } from "lucide-react";
+import { AuthLayout } from "@/components/layout/AuthLayout";
+import { Button } from "@/components/buttons";
+import { Field, FormError } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { PasswordInput, PasswordStrength } from "@/components/ui/password-input";
+import { api, errorMessage } from "@/lib/client/api";
+import { withPageAuth } from "@/lib/ssr";
+
+export const getServerSideProps = withPageAuth("guest");
 
 export default function SignUp() {
-    const [error, setError] = useState<string | null>(null);
-    const [loading, setLoading] = useState(false);
-
     const router = useRouter();
+    const [form, setForm] = React.useState({ name: "", email: "", password: "", passwordConfirm: "" });
+    const [errors, setErrors] = React.useState<Partial<Record<keyof typeof form, string>>>({});
+    const [error, setError] = React.useState<string | null>(null);
+    const [loading, setLoading] = React.useState(false);
 
-    async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
-        e.preventDefault();
+    const set = (key: keyof typeof form) => (event: React.ChangeEvent<HTMLInputElement>) => {
+        setForm((current) => ({ ...current, [key]: event.target.value }));
+        if (errors[key]) setErrors((current) => ({ ...current, [key]: undefined }));
+    };
 
-        setError(null);
-        setLoading(true);
-
-        const form = e.currentTarget;
-
-        const body = {
-            name: form.user_name.value.trim(),
-            email: form.email.value.trim(),
-            password: form.password.value,
-            passwordConfirm: form.passwordConfirm.value,
-        };
-
-        if (body.password !== body.passwordConfirm) {
-            setError("Las contraseñas no coinciden.");
-            setLoading(false);
-            return;
+    function validate() {
+        const next: typeof errors = {};
+        if (form.name.trim().length < 2) next.name = "Escribe tu nombre.";
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(form.email.trim())) next.email = "Ingresa un correo válido.";
+        if (form.password.length < 8 || !/[A-Za-z]/.test(form.password) || !/\d/.test(form.password)) {
+            next.password = "Usa al menos 8 caracteres combinando letras y números.";
         }
+        if (form.password !== form.passwordConfirm) next.passwordConfirm = "Las contraseñas no coinciden.";
+        return next;
+    }
 
+    async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+        event.preventDefault();
+        setError(null);
+        const next = validate();
+        setErrors(next);
+        if (Object.keys(next).length) return;
+
+        setLoading(true);
         try {
-            const res = await fetch("/api/signup", {
+            const data = await api<{ redirectTo: string }>("/api/signup", {
                 method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                },
-                body: JSON.stringify(body),
+                body: { ...form, name: form.name.trim(), email: form.email.trim() },
             });
-
-            const data = await res.json();
-
-            if (!res.ok) {
-                setError(
-                    data.error ??
-                    "No fue posible crear la cuenta."
-                );
-                return;
-            }
-
-            await router.push("/auth/logIn");
+            // El servidor ya inició la sesión: vamos directo al onboarding.
+            await router.push(data.redirectTo);
         } catch (err) {
-            console.error("Error al registrarse:", err);
-
-            setError(
-                "No fue posible crear la cuenta. Por favor, inténtalo nuevamente."
-            );
-        } finally {
+            setError(errorMessage(err, "No fue posible crear la cuenta."));
             setLoading(false);
-            setTimeout(() => setError(null), 5000);
         }
     }
 
     return (
-        <div className="min-h-screen bg-muted/30">
-            <Header />
+        <AuthLayout
+            title="Crear cuenta"
+            heading="Crea tu cuenta"
+            subheading="En menos de 2 minutos tendrás tu presupuesto mensual organizado."
+            footer={
+                <>
+                    ¿Ya tienes cuenta?{" "}
+                    <Link href="/auth/logIn" className="font-medium text-primary hover:underline">
+                        Inicia sesión
+                    </Link>
+                </>
+            }
+        >
+            <form onSubmit={handleSubmit} noValidate className="space-y-4">
+                <Field label="Nombre" htmlFor="name" error={errors.name}>
+                    <Input id="name" autoComplete="name" autoFocus value={form.name} onChange={set("name")} placeholder="¿Cómo te llamas?" maxLength={80} disabled={loading} aria-invalid={Boolean(errors.name) || undefined} />
+                </Field>
 
-            <main className="flex min-h-[calc(100vh-80px)] items-center justify-center px-4 py-10">
-                <div className="w-full max-w-md">
+                <Field label="Correo electrónico" htmlFor="email" error={errors.email}>
+                    <Input id="email" type="email" autoComplete="email" value={form.email} onChange={set("email")} placeholder="tu@correo.com" disabled={loading} aria-invalid={Boolean(errors.email) || undefined} />
+                </Field>
 
-                    {/* Encabezado */}
-                    <div className="mb-8 text-center">
-                        <h1 className="text-4xl font-bold tracking-tight">
-                            Crear cuenta
-                        </h1>
+                <Field label="Contraseña" htmlFor="password" error={errors.password}>
+                    <PasswordInput id="password" autoComplete="new-password" value={form.password} onChange={set("password")} placeholder="Mínimo 8 caracteres" disabled={loading} aria-invalid={Boolean(errors.password) || undefined} />
+                    <PasswordStrength value={form.password} />
+                </Field>
 
-                        <p className="mt-2 text-sm text-muted-foreground">
-                            Regístrate para comenzar a administrar tus finanzas
-                        </p>
-                    </div>
+                <Field label="Confirmar contraseña" htmlFor="passwordConfirm" error={errors.passwordConfirm}>
+                    <PasswordInput
+                        id="passwordConfirm"
+                        autoComplete="new-password"
+                        value={form.passwordConfirm}
+                        onChange={set("passwordConfirm")}
+                        placeholder="Repite tu contraseña"
+                        disabled={loading}
+                        aria-invalid={Boolean(errors.passwordConfirm) || undefined}
+                    />
+                </Field>
 
-                    {/* Card */}
-                    <div className="rounded-2xl border bg-card p-6 shadow-sm sm:p-8">
-                        <form
-                            onSubmit={handleSubmit}
-                            className="space-y-5"
-                        >
-                            {/* Nombre */}
-                            <div className="space-y-2">
-                                <label
-                                    htmlFor="user_name"
-                                    className="text-sm font-medium"
-                                >
-                                    Nombre
-                                </label>
+                <FormError message={error} />
 
-                                <Input
-                                    id="user_name"
-                                    name="user_name"
-                                    type="text"
-                                    placeholder="Tu nombre"
-                                    autoComplete="name"
-                                    required
-                                    disabled={loading}
-                                />
-                            </div>
+                <Button type="submit" size="lg" block loading={loading} loadingText="Creando tu cuenta…">
+                    <UserPlus /> Crear cuenta
+                </Button>
 
-                            {/* Correo */}
-                            <div className="space-y-2">
-                                <label
-                                    htmlFor="email"
-                                    className="text-sm font-medium"
-                                >
-                                    Correo electrónico
-                                </label>
-
-                                <Input
-                                    id="email"
-                                    name="email"
-                                    type="email"
-                                    placeholder="correo@ejemplo.com"
-                                    autoComplete="email"
-                                    required
-                                    disabled={loading}
-                                />
-                            </div>
-
-                            {/* Contraseña */}
-                            <div className="space-y-2">
-                                <label
-                                    htmlFor="password"
-                                    className="text-sm font-medium"
-                                >
-                                    Contraseña
-                                </label>
-
-                                <Input
-                                    id="password"
-                                    name="password"
-                                    type="password"
-                                    placeholder="Ingresa una contraseña"
-                                    autoComplete="new-password"
-                                    required
-                                    disabled={loading}
-                                />
-                            </div>
-
-                            {/* Confirmar contraseña */}
-                            <div className="space-y-2">
-                                <label
-                                    htmlFor="passwordConfirm"
-                                    className="text-sm font-medium"
-                                >
-                                    Confirmar contraseña
-                                </label>
-
-                                <Input
-                                    id="passwordConfirm"
-                                    name="passwordConfirm"
-                                    type="password"
-                                    placeholder="Repite tu contraseña"
-                                    autoComplete="new-password"
-                                    required
-                                    disabled={loading}
-                                />
-                            </div>
-
-                            {/* Error */}
-                            {error && (
-                                <div
-                                    role="alert"
-                                    className="rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive"
-                                >
-                                    {error}
-                                </div>
-                            )}
-
-                            {/* Botón */}
-                            <Button
-                                type="submit"
-                                disabled={loading}
-                                variant="default"
-                            >
-                                {loading
-                                    ? "Creando cuenta..."
-                                    : "Crear cuenta"}
-                            </Button>
-                        </form>
-
-                        {/* Login */}
-                        <div className="mt-6 border-t pt-6 text-center">
-                            <p className="text-sm text-muted-foreground">
-                                ¿Ya tienes una cuenta?
-                            </p>
-
-                            <Button
-                                type="button"
-                                variant="color"
-                                disabled={loading}
-                                onClick={() => router.push("/auth/logIn")}
-                                className="mt-1"
-                            >
-                                Iniciar sesión
-                            </Button>
-                        </div>
-                    </div>
-                </div>
-            </main>
-        </div>
+                <p className="text-center text-xs text-muted-foreground">Tus contraseñas se guardan cifradas. Nunca te pediremos claves bancarias.</p>
+            </form>
+        </AuthLayout>
     );
 }

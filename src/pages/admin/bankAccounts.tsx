@@ -1,113 +1,66 @@
-import { FormBankAccount } from "@/components/form_bank_accounts";
-import { Header } from "@/components/header";
-import { TableAllBankAccounts } from "@/components/table_bankAccounts";
-import { useState } from "react";
+import * as React from "react";
+import { AdminLayout } from "@/components/admin/AdminLayout";
+import { AdminTable, useCollection } from "@/components/admin/AdminTable";
+import { ConfirmDialog } from "@/components/ui/dialog";
+import { Badge } from "@/components/ui/primitives";
+import { useToast } from "@/components/ui/toast";
+import { formatNumericDate } from "@/components/admin/format";
+import { api, errorMessage } from "@/lib/client/api";
+import { withPageAuth } from "@/lib/ssr";
+import type { BankAccount } from "@/types";
 
-type BankAccountForm = {
-    account_number: string,
-    account_type: number,
-    bank_name: string,
-};
+export const getServerSideProps = withPageAuth("admin");
 
-type BankRow = {
-    id: number,
-    user_id: number,
-    account_number: string,
-    account_type: number,
-    bank_name: string,
-    account_balance: string,
-    created_at: string,
-    updated_at: string,
-    user_name?: string,
+/** Muestra solo los últimos dígitos (si existen) de la referencia guardada. */
+function maskAccount(reference: string) {
+    const match = /^\*{4}(\d{4})-/.exec(reference);
+    return match ? `•••• ${match[1]}` : "—";
 }
 
-export default function BankAccounts(){
-    const [error, setError] = useState<string | null>(null);
-    const [success, setSuccess] = useState<string | null>(null);
-    const [reloadTable, setReloadTable] = useState(false);
-    const [bankToEdit, setBankToEdit] = useState<BankRow | null>(null);
+export default function AdminBankAccounts() {
+    const toast = useToast();
+    const [deleting, setDeleting] = React.useState<BankAccount | null>(null);
+    const { rows, loading, reload } = useCollection(
+        async () => (await api<{ bankAccounts: BankAccount[] }>("/api/bankAccount?scope=all")).bankAccounts,
+        (message) => toast.error("Error al cargar cuentas", message)
+    );
 
-    //Funcion para crear lun banco
-    async function handleCreateBank(bank: BankAccountForm) {
-        const res = await fetch("/api/me");
-        const dataUser = await res.json();
-
-        const body = {
-            id: dataUser.user.id,
-            bankAccount: bank
-        };
-
+    async function remove() {
+        if (!deleting) return;
         try {
-            const res = await fetch("/api/bankAccount", {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                },
-                body: JSON.stringify(body),
-            });
-            const data = await res.json();
-
-            setReloadTable(prev => !prev);
-
-            if (!res.ok) {
-                setError(data.error);
-                return;
-            }
-
-            setSuccess(data.id);
-            setTimeout(() => setSuccess(null), 5000);
-        } catch (err) {
-            setError("Error al iniciar sesión. Por favor, inténtalo de nuevo.");
-            setTimeout(() => setError(null), 5000);
+            await api("/api/bankAccount", { method: "DELETE", body: { id: deleting.id } });
+            toast.success("Cuenta eliminada");
+            setDeleting(null);
+            await reload();
+        } catch (error) {
+            toast.error("No se pudo eliminar", errorMessage(error));
         }
     }
 
-    //Funcion para actualizar el banco
-    async function handleUpdateBank(bank: BankAccountForm) {
-        const body = {
-            id: bankToEdit?.id,
-            bankAccount: bank
-        };
-
-        try {
-            const res = await fetch("/api/bankAccount", {
-                method: "PUT",
-                headers: {
-                    "Content-Type": "application/json",
-                },
-                body: JSON.stringify(body),
-            });
-            const data = await res.json();
-
-            setReloadTable(prev => !prev);
-
-            if (!res.ok) {
-                setError(data.error);
-                return;
-            }
-
-            setSuccess(data.id);
-            setTimeout(() => setSuccess(null), 5000);
-        } catch (err) {
-            setError("Error al iniciar sesión. Por favor, inténtalo de nuevo.");
-            setTimeout(() => setError(null), 5000);
-        }
-    }
-
-    return(
-        <div>
-            <Header/>
-            Administracion de cuentas de banco
-            <br />
-            <FormBankAccount createBankAccount={handleCreateBank} bankAccontToEdit={bankToEdit} UpdateBankAccount={handleUpdateBank}/>
-            {error && (
-                <p className="text-red-600 text-center">{error}</p>
-            )}
-            {success && (
-                <p className="text-green-600 text-center">Ingreso con ID {success} registrado</p>
-            )}
-            <br />
-            <TableAllBankAccounts onEdit={setBankToEdit} reload={reloadTable}/>
-        </div>
-    )
+    return (
+        <AdminLayout title="Cuentas bancarias" description="Cuentas registradas por los usuarios. No se almacenan números completos.">
+            <AdminTable
+                title="Cuentas"
+                rows={rows}
+                loading={loading}
+                rowKey={(r) => r.id}
+                onDelete={setDeleting}
+                columns={[
+                    { header: "Banco", cell: (r) => <span className="font-medium">{r.bank_name}</span>, search: (r) => r.bank_name },
+                    { header: "Usuario", cell: (r) => r.user_name, search: (r) => r.user_name ?? "" },
+                    { header: "Tipo", cell: (r) => <Badge>{Number(r.account_type) === 1 ? "Ahorros" : "Corriente"}</Badge> },
+                    { header: "Cuenta", cell: (r) => <span className="tabular text-muted-foreground">{maskAccount(r.account_number)}</span> },
+                    { header: "Creada", cell: (r) => formatNumericDate(r.created_at) },
+                ]}
+            />
+            <ConfirmDialog
+                open={Boolean(deleting)}
+                onOpenChange={(open) => !open && setDeleting(null)}
+                title="¿Eliminar cuenta?"
+                description={deleting ? `${deleting.bank_name} de ${deleting.user_name}.` : undefined}
+                confirmLabel="Eliminar"
+                onConfirm={remove}
+            />
+        </AdminLayout>
+    );
 }

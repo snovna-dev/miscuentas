@@ -1,130 +1,104 @@
 import * as React from "react";
+import Link, { type LinkProps } from "next/link";
 import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
-import { socialIcons } from "./SocialIcon";
-import Link, { type LinkProps } from "next/link";
-
-type SocialIconType = keyof typeof socialIcons | "none";
+import { Spinner } from "@/components/ui/spinner";
 
 const buttonVariants = cva(
-    "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium mr-4",
+    [
+        "relative inline-flex select-none items-center justify-center gap-2 whitespace-nowrap rounded-xl text-sm font-medium",
+        "transition-[background-color,color,box-shadow,transform,opacity] duration-200 ease-out",
+        "active:scale-[0.97] disabled:pointer-events-none disabled:opacity-55",
+        "focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/40",
+        "[&_svg]:size-4 [&_svg]:shrink-0",
+    ].join(" "),
     {
         variants: {
             variant: {
                 default:
-                    "rounded-full bg-primary px-4 py-2 text-primary-foreground shadow-lg hover:bg-primary/90",
-
-                transparent:
-                    "rounded-full border border-white px-6 py-3 font-semibold transition hover:bg-white hover:text-slate-900",
-
-                color:
-                    "rounded-md bg-surface-color px-4 py-2 text-surface-color-foreground shadow-lg hover:bg-primary/90",
-
-                icon:
-                    "rounded-md bg-surface-color px-4 py-2 text-surface-color-foreground shadow-lg hover:bg-primary/90",
+                    "bg-primary text-primary-foreground shadow-[0_6px_16px_-6px_color-mix(in_oklch,var(--primary)_70%,transparent)] hover:brightness-110",
+                secondary: "bg-secondary text-secondary-foreground hover:bg-accent",
+                outline: "border border-border bg-card text-foreground hover:bg-muted",
+                ghost: "text-foreground hover:bg-muted",
+                destructive: "bg-destructive text-destructive-foreground hover:brightness-110",
+                soft: "bg-primary/10 text-primary hover:bg-primary/15",
+                link: "rounded-md px-0 text-primary underline-offset-4 hover:underline",
+                // Alias de compatibilidad con el diseño anterior
+                transparent: "border border-current/25 bg-transparent hover:bg-foreground/5",
+                color: "bg-secondary text-secondary-foreground hover:bg-accent",
+                icon: "bg-muted text-foreground hover:bg-accent",
             },
-
             size: {
-                default: "h-9 px-4 py-2 has-[>svg]:px-3",
-                sm: "h-8 rounded-md gap-1.5 px-3 has-[>svg]:px-2.5",
-                lg: "h-10 rounded-md px-6 has-[>svg]:px-4",
-                icon: "size-9",
-                "icon-sm": "size-8",
-                "icon-lg": "size-10",
+                default: "h-10 px-4",
+                sm: "h-8 rounded-lg px-3 text-xs",
+                lg: "h-12 px-6 text-base",
+                xl: "h-14 rounded-2xl px-8 text-base",
+                icon: "size-10",
+                "icon-sm": "size-8 rounded-lg",
+                "icon-lg": "size-12",
             },
-
-            iconType: {
-                facebook: "",
-                whatsapp: "",
-                youtube: "",
-                none: "",
+            block: {
+                true: "w-full",
+                false: "",
             },
         },
-
         defaultVariants: {
             variant: "default",
             size: "default",
-            iconType: "none",
+            block: false,
         },
     }
 );
 
 type CommonProps = VariantProps<typeof buttonVariants> & {
-    iconType?: SocialIconType;
     className?: string;
     children?: React.ReactNode;
+    /** Muestra un spinner y bloquea el botón (evita envíos dobles). */
+    loading?: boolean;
+    loadingText?: string;
 };
 
-type ButtonAsButton = CommonProps &
-    React.ButtonHTMLAttributes<HTMLButtonElement> & {
-        href?: never;
-    };
-
-type ButtonAsAnchor = CommonProps &
-    Omit<React.AnchorHTMLAttributes<HTMLAnchorElement>, "href"> &
-    Pick<LinkProps, "href">;
+type ButtonAsButton = CommonProps & React.ButtonHTMLAttributes<HTMLButtonElement> & { href?: never };
+type ButtonAsAnchor = CommonProps & Omit<React.AnchorHTMLAttributes<HTMLAnchorElement>, "href"> & Pick<LinkProps, "href">;
 
 export type ButtonProps = ButtonAsButton | ButtonAsAnchor;
 
-function Button(props: ButtonProps) {
-    const {
-        className,
-        variant,
-        size,
-        iconType = "none",
-        children,
-    } = props;
+const Button = React.forwardRef<HTMLButtonElement | HTMLAnchorElement, ButtonProps>(function Button(props, ref) {
+    const { className, variant, size, block, children, loading = false, loadingText, ...rest } = props;
+    const classes = cn(buttonVariants({ variant, size, block }), className);
 
-    const showIcon = iconType !== "none";
-
-    const IconComponent =
-        showIcon && iconType in socialIcons
-            ? socialIcons[iconType as keyof typeof socialIcons]
-            : null;
-
-    const classes = cn(
-        buttonVariants({
-            variant,
-            size,
-            iconType,
-        }),
-        className
+    const content = loading ? (
+        <>
+            <Spinner className="size-4" />
+            <span>{loadingText ?? children}</span>
+        </>
+    ) : (
+        children
     );
 
-    if ("href" in props && props.href !== undefined) {
-        const { href, ...rest } = props;
-
+    if ("href" in rest && rest.href !== undefined) {
+        const { href, ...anchorProps } = rest as ButtonAsAnchor;
         return (
-            <Link
-                href={href}
-                data-slot="button"
-                className={classes}
-                {...rest}
-            >
-                {IconComponent && (
-                    <IconComponent className="h-4 w-4" />
-                )}
-
-                {children}
+            <Link ref={ref as React.Ref<HTMLAnchorElement>} href={href} data-slot="button" className={classes} {...anchorProps}>
+                {content}
             </Link>
         );
     }
 
-    const { ...rest } = props;
-
+    const buttonProps = rest as React.ButtonHTMLAttributes<HTMLButtonElement>;
     return (
         <button
+            ref={ref as React.Ref<HTMLButtonElement>}
             data-slot="button"
             className={classes}
-            {...rest}
+            {...buttonProps}
+            type={buttonProps.type ?? "button"}
+            disabled={buttonProps.disabled || loading}
+            aria-busy={loading || undefined}
         >
-            {IconComponent && (
-                <IconComponent className="h-4 w-4" />
-            )}
-
-            {children}
+            {content}
         </button>
     );
-}
+});
 
 export { Button, buttonVariants };

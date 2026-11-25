@@ -1,293 +1,133 @@
-import { allAsync, getDb, runAsync } from "../index";
+import { allAsync, getAsync, getDb, nowISO, runAsync, withTransaction } from "../index";
+import { HttpError } from "@/lib/http";
+import { ymIndex } from "@/lib/dates";
+import { serverCurrentMonth } from "@/lib/serverTime";
+import { ExpenseCategoryType } from "@/emuns/ExpenseCategoryType";
+import { ExpenseState } from "@/emuns/ExpenseState";
+import type { Expense, ExpenseInput } from "@/types";
 
-export type BdNewExpenseRow = {
-    userId: number,
-    category: number,
-    name: string,
-    description: string,
-    date: string,
-    amount:number
-};
+const SELECT_EXPENSE = `
+    SELECT e.id, e.user_id, e.expense_category_id, ec.name AS category_name, ec.category_type,
+           e.name, e.description, e.expense_date, e.amount, e.frequency_months, e.installments, e.created_at, e.updated_at, e.deleted_at
+    FROM expenses e
+    INNER JOIN expense_categories ec ON ec.id = e.expense_category_id`;
 
-export type DbUpdateExpenseRow = {
-    expense_category_id: number,
-    name: string,
-    description: string,
-    expense_date: string,
-    amount:number
+/** Gastos fijos activos (plantillas que se repiten cada mes). */
+export async function listFixedExpensesByUser(userId: number) {
+    return allAsync<Expense>(
+        getDb(),
+        `${SELECT_EXPENSE} WHERE e.user_id = ? AND ec.category_type = ? AND e.deleted_at IS NULL ORDER BY e.expense_date, e.name`,
+        [userId, ExpenseCategoryType.FIXED]
+    );
 }
 
-export type BdExpenseRow = {
-    id: number,
-    userId: number
-    category_name: string,
-    category_type: number,
-    name: string,
-    expense_date: string,
-    amount: number,
+export async function listExpensesByUser(userId: number) {
+    return allAsync<Expense>(
+        getDb(),
+        `${SELECT_EXPENSE} WHERE e.user_id = ? AND e.deleted_at IS NULL ORDER BY e.expense_date DESC, e.id DESC`,
+        [userId]
+    );
 }
 
-export async function createExpenses({
-    userId,
-    category,
-    name,
-    description,
-    date,
-    amount
-}: BdNewExpenseRow): Promise<{ id: number }> {
-    const db = getDb();
-    const isNow = () => new Date().toISOString();
-    let began = false;
+export async function listAllExpenses() {
+    return allAsync<Expense>(
+        getDb(),
+        `SELECT x.*, u.name AS user_name FROM (${SELECT_EXPENSE} WHERE e.deleted_at IS NULL) x
+         INNER JOIN users u ON u.id = x.user_id
+         ORDER BY x.expense_date DESC, x.id DESC LIMIT 1000`
+    );
+}
 
-    try {
-        await runAsync(db, "BEGIN");
-        began = true;
+/** Crea solo la definición (uso administrativo). */
+export async function createExpense(userId: number, input: ExpenseInput) {
+    const result = await runAsync(
+        getDb(),
+        `INSERT INTO expenses (user_id, expense_category_id, name, description, expense_date, amount, frequency_months, installments, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [userId, input.expense_category_id, input.name, input.description, input.expense_date, input.amount, input.frequency_months ?? 1, input.installments ?? null, nowISO(), nowISO()]
+    );
+    return { id: result.lastID };
+}
 
-        const expenses = await runAsync(
-            db,
-            `INSERT INTO expenses (user_id, expense_category_id, name, description, expense_date, amount, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-            [userId, category, name, description, date, amount, isNow(), isNow()],
+async function getOwnedExpense(id: number, userId: number | null) {
+    const row = await getAsync<Expense>(
+        getDb(),
+        `${SELECT_EXPENSE} WHERE e.id = ? AND e.deleted_at IS NULL ${userId === null ? "" : "AND e.user_id = ?"}`,
+        userId === null ? [id] : [id, userId]
+    );
+    if (!row) throw new HttpError(404, "No se encontró el gasto.");
+    return row;
+}
+
+/**
+ * Actualiza la definición del gasto. Si es fijo, también actualiza el valor de los
+ * registros PENDIENTES desde el mes actual en adelante (p. ej. subió el arriendo).
+ */
+export async function updateExpense(id: number, userId: number | null, input: ExpenseInput) {
+    const current = await getOwnedExpense(id, userId);
+
+    return withTransaction(async (conn) => {
+        const category = await getAsync<{ category_type: number }>(
+            conn,
+            `SELECT category_type FROM expense_categories WHERE id = ?`,
+            [input.expense_category_id]
         );
-
-        await runAsync(db, "COMMIT");
-
-        return {id: expenses.lastID};
-    }catch (e) {
-        if (began) await runAsync(db, "ROLLBACK");
-        throw e;
-    } finally {
-        //db.close();
-    }  
-}
-
-export async function getAllExpensesByUser(id: number): Promise<BdNewExpenseRow[]> {
-    const db = getDb();
-
-    try {
-        const allExpensesResult = await allAsync<BdNewExpenseRow>(
-            db,
-            `SELECT
-                *
-            FROM expenses
-            WHERE user_id = ?`,
-            [id],
-        );
-
-        if(!allExpensesResult){
-            throw new Error("No hay gastos registrados")
+        if (!category) throw new HttpError(400, "La categoría seleccionada no existe.");
+        if (Number(current.category_type) === ExpenseCategoryType.FIXED && Number(category.category_type) !== ExpenseCategoryType.FIXED) {
+            throw new HttpError(400, "Un gasto fijo debe conservar una categoría de tipo fijo.");
         }
 
-        return allExpensesResult;
-    }finally {
-        //db.close();
-    }   
-}
-
-export async function getExpensesByUser(id: number): Promise<BdExpenseRow[]> {
-    const db = getDb();
-
-    try {
-        const allExpensesResult = await allAsync<BdExpenseRow>(
-            db,
-            `SELECT
-                e.id,
-                e.user_id,
-                ec.name as category_name,
-                ec.category_type,
-                e.name,
-                e.expense_date,
-                e.amount
-            FROM expenses e
-            INNER JOIN expense_categories ec ON e.expense_category_id = ec.id
-            WHERE e.user_id = ? and ec.category_type = 1`,
-            [id],
-        );
-
-        if(!allExpensesResult){
-            throw new Error("No hay gastos registrados")
-        }
-
-        return allExpensesResult;
-    }finally {
-        //db.close();
-    }   
-}
-
-export async function getAllExpenses(): Promise<BdNewExpenseRow[]> {
-    const db = getDb();
-
-    try {
-        const allExpensesResult = await allAsync<BdNewExpenseRow>(
-            db,
-            `SELECT
-                i.*,
-                u.name as user_name
-            FROM expenses i
-            INNER JOIN users u ON i.user_id = u.id`,
-        );
-
-        if(!allExpensesResult){
-            throw new Error("No hay gastos registrados")
-        }
-
-        return allExpensesResult;
-    }finally {
-        //db.close();
-    }   
-}
-
-export async function deleteExpense(id: number): Promise<{ id: number }> {
-    const db = getDb();
-    let began = false;
-
-    try {
-        await runAsync(db, "BEGIN");
-        began = true;
-
-        const deleteResult = await runAsync(
-            db,
-            `DELETE FROM expenses WHERE id = ?`,
-            [id],
-        );
-        await runAsync(db, "COMMIT");
-        
-        if(deleteResult.changes === 0){
-            throw new Error("No se encontró el gasto a eliminar");
-        }
-        return {id};
-    }catch (e) {
-        if (began) await runAsync(db, "ROLLBACK");
-        throw e;
-    } finally {
-        //db.close();
-    }  
-}
-
-export async function updateExpense(id: number, data: DbUpdateExpenseRow): Promise<{ id: number }> {
-    const db = getDb();
-    const isNow = () => new Date().toISOString();
-    let began = false;
-
-    try {
-        await runAsync(db, "BEGIN");
-        began = true;
-
-        const updateResult = await runAsync(
-            db,
-            `UPDATE expenses SET
-            expense_category_id = ?, name = ?, description = ?, expense_date = ?, amount = ?, updated_at = ?
-            WHERE id = ?`,
-            [data.expense_category_id, data.name, data.description, data.expense_date, data.amount, isNow(), id],
-        );
-        await runAsync(db, "COMMIT");
-
-        if(updateResult.changes === 0){
-            throw new Error("No se encontró el gasto a actualizar");
-        }
-        return {id};
-    }catch (e) {
-        if (began) await runAsync(db, "ROLLBACK");
-        throw e;
-    } finally {
-        //db.close();
-    }  
-}
-
-export async function createExpenseVariable(id: number, newExpense: BdNewExpenseRow, idPeriod: number, expense_state_id: number): Promise<{ id: number }> {
-    const db = getDb();
-    const isNow = () => new Date().toISOString();
-    let began = false;
-
-    try {
-        await runAsync(db, "BEGIN");
-        began = true;
-
-        const expense = await runAsync(
-            db,
-            `INSERT INTO expenses (user_id, expense_category_id, name, description, expense_date, amount, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-            [id, newExpense.category, newExpense.name, newExpense.description, newExpense.date, newExpense.amount, isNow(), isNow()],
-        );
-
-        const periodExpense = await runAsync(
-            db,
-            `INSERT INTO period_expenses
-            (
-                period_id,
-                expense_id,
-                expense_date,
-                amount,
-                expense_state_id,
-                created_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?)`,
+        await runAsync(
+            conn,
+            `UPDATE expenses SET expense_category_id = ?, name = ?, description = ?, expense_date = ?, amount = ?,
+                    frequency_months = ?, installments = ?, updated_at = ? WHERE id = ?`,
             [
-                idPeriod,
-                expense.lastID,
-                newExpense.date,
-                newExpense.amount,
-                expense_state_id,
-                isNow()
+                input.expense_category_id,
+                input.name,
+                input.description,
+                input.expense_date,
+                input.amount,
+                input.frequency_months ?? current.frequency_months ?? 1,
+                input.installments === undefined ? (current.installments ?? null) : input.installments,
+                nowISO(),
+                id,
             ]
         );
 
-        await runAsync(db, "COMMIT");
-
-        return {id: periodExpense.lastID};
-    }catch (e) {
-        if (began) await runAsync(db, "ROLLBACK");
-        throw e;
-    } finally {
-        //db.close();
-    }  
-}
-
-export async function getFixedExpensesByUser(id: number): Promise<BdNewExpenseRow[]> {
-    const db = getDb();
-
-    try {
-        const allExpensesResult = await allAsync<BdNewExpenseRow>(
-            db,
-            `SELECT
-                e.*
-            FROM expenses e
-            INNER JOIN expense_categories ec ON e.expense_category_id = ec.id
-            WHERE user_id = ? and ec.category_type = 1`,
-            [id],
-        );
-
-        if(!allExpensesResult){
-            throw new Error("No hay gastos registrados")
+        let updatedInstances = 0;
+        if (Number(current.category_type) === ExpenseCategoryType.FIXED) {
+            const result = await runAsync(
+                conn,
+                `UPDATE period_expenses pe
+                 INNER JOIN periods p ON p.id = pe.period_id
+                 SET pe.amount = ?, pe.updated_at = ?
+                 WHERE pe.expense_id = ? AND pe.expense_state_id = ? AND (p.year * 12 + p.month - 1) >= ?`,
+                [input.amount, nowISO(), id, ExpenseState.PENDING, ymIndex(serverCurrentMonth())]
+            );
+            updatedInstances = result.changes;
         }
 
-        return allExpensesResult;
-    }finally {
-        //db.close();
-    }   
+        return { id, updatedInstances };
+    });
 }
 
+/**
+ * Borrado lógico: deja de repetirse y se quitan los pendientes desde este mes,
+ * pero el historial (meses anteriores y pagos realizados) se conserva.
+ * Antes el DELETE en cascada borraba todo el historial de pagos.
+ */
+export async function deleteExpense(id: number, userId: number | null) {
+    await getOwnedExpense(id, userId);
 
-//Funcion que consulta el gasto por ID
-export async function getExpenseByExpenseId(id: number): Promise<BdNewExpenseRow[]> {
-    const db = getDb();
-
-    try {
-        const allExpensesResult = await allAsync<BdNewExpenseRow>(
-            db,
-            `SELECT
-                *
-            FROM expenses
-            WHERE id = ?`,
-            [id],
+    return withTransaction(async (conn) => {
+        await runAsync(conn, `UPDATE expenses SET deleted_at = ?, updated_at = ? WHERE id = ?`, [nowISO(), nowISO(), id]);
+        const removed = await runAsync(
+            conn,
+            `DELETE pe FROM period_expenses pe
+             INNER JOIN periods p ON p.id = pe.period_id
+             WHERE pe.expense_id = ? AND pe.expense_state_id = ? AND (p.year * 12 + p.month - 1) >= ?`,
+            [id, ExpenseState.PENDING, ymIndex(serverCurrentMonth())]
         );
-
-        if(!allExpensesResult){
-            throw new Error("No hay gasto registrado")
-        }
-
-        return allExpensesResult;
-    }finally {
-        //db.close();
-    }   
+        return { id, removedPending: removed.changes };
+    });
 }
